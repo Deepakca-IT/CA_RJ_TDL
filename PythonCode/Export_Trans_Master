@@ -1,0 +1,79 @@
+import pyodbc
+import warnings
+import pandas as pd
+import time
+import os
+from tkinter import Tk, filedialog
+
+warnings.filterwarnings('ignore')
+
+# Hide the Tkinter root window
+root = Tk()
+root.withdraw()
+
+# Define server and port
+server = 'localhost'
+port = '9400'
+
+# Create the ODBC connection string (no company name required)
+connection_string = (
+    f"DRIVER={{Tally ODBC Driver64}};"
+    f"SERVER={server},{port};"
+)
+
+# Connect to Tally ODBC without pop-ups
+try:
+    cnxn = pyodbc.connect('DSN=TallyODBC64_9400;UID=;PWD=;')
+    cursor = cnxn.cursor()
+    print("✅ Connected to Tally ODBC successfully!")
+except Exception as e:
+    print(f"❌ Error connecting to Tally ODBC: {e}")
+    exit()
+
+# Query 1: Transactions Data
+start_time = time.time()
+query1 = '''SELECT $VoucherNumber,$Date,$VoucherTypeName,$VchTypeParent,$Particulars, $Amount,$Led_Parent, $Led_Group,$Party_LedName,$Led_GSTIN,$Led_PAN FROM A__T_Vch10'''
+df1 = pd.read_sql(query1, cnxn)
+print("--- %s seconds for reading transactions ---" % (time.time() - start_time))
+
+# Query 2: Master Data
+start_time2 = time.time()
+query2 = '''SELECT $Name,$_PrimaryGroup,$Parent,$OpeningBalance,$ClosingBalance,$_PrevYearBalance,$IsRevenue,$PartyGSTIN,$Nature_Led,$PAN FROM A__Ledger10'''  
+df2 = pd.read_sql(query2, cnxn)
+print("--- %s seconds for reading master data ---" % (time.time() - start_time2))
+
+# Ask user where to save Transactions file
+transactions_file = filedialog.asksaveasfilename(
+    defaultextension=".csv",
+    filetypes=[("CSV files", "*.csv")],
+    title="Save Transactions File",
+    initialfile="Transactions.csv"
+)
+
+# If the user cancels the dialog, exit
+if not transactions_file:
+    print("❌ Transaction file save canceled. Exiting.")
+    exit()
+
+# Automatically generate the master data file name based on the selected transactions file
+file_prefix = os.path.splitext(os.path.basename(transactions_file))[0].replace("_Transactions", "")
+
+master_data_file = filedialog.asksaveasfilename(
+    defaultextension=".csv",
+    filetypes=[("CSV files", "*.csv")],
+    title="Save Master Data File",
+    initialfile=f"{file_prefix}_MasterData.csv"
+)
+
+# If the user cancels the dialog, exit
+if not master_data_file:
+    print("❌ Master data file save canceled. Exiting.")
+    exit()
+
+# Save files
+df1.to_csv(transactions_file, index=False)
+df2.to_csv(master_data_file, index=False)
+
+print("✅ Files saved successfully!")
+print(f"  - Transactions: {transactions_file}")
+print(f"  - Master Data: {master_data_file}")
