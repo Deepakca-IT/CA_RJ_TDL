@@ -1,0 +1,155 @@
+import os
+import pandas as pd
+import logging
+from tkinter import Tk, filedialog, Toplevel, Listbox, MULTIPLE, Button
+from tkinter.filedialog import askopenfilenames, asksaveasfilename
+
+# Setup logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+def get_user_selection(options, title="Select Items"):
+    """Prompt user to select multiple options from a listbox."""
+    selected_items = []
+    
+    def on_select():
+        nonlocal selected_items
+        selected_indices = listbox.curselection()
+        selected_items = [options[i] for i in selected_indices]
+        selection_window.quit()
+        selection_window.destroy()
+    
+    selection_window = Toplevel()
+    selection_window.title(title)
+    selection_window.geometry("400x300")
+    
+    listbox = Listbox(selection_window, selectmode=MULTIPLE)
+    listbox.pack(pady=10, padx=10, expand=True, fill='both')
+    
+    for item in options:
+        listbox.insert('end', item)
+    
+    button = Button(selection_window, text="Select", command=on_select)
+    button.pack(pady=5)
+    
+    selection_window.mainloop()
+    return selected_items
+
+try:
+    # Step 1: Select multiple input CSV files
+    root = Tk()
+    root.withdraw()
+    input_files = askopenfilenames(
+        title="Select Input CSV Files",
+        filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+    )
+
+    if not input_files:
+        raise ValueError("No input files were selected.")
+
+    # Read and merge all selected input files
+    dataframes = [pd.read_csv(file) for file in input_files]
+    data = pd.concat(dataframes, ignore_index=True)
+
+    # Validate required columns
+    required_columns = [
+        'Branch', '$VoucherTypeName', '$Particulars', '$Amount', '$Led_Parent',
+        '$Led_Group', '$Party_LedName', '$Led_PAN'
+    ]
+    if not set(required_columns).issubset(data.columns):
+        missing_columns = list(set(required_columns) - set(data.columns))
+        raise ValueError(f"The input data is missing the following required columns: {missing_columns}")
+
+    # Step 2: Get list of available ledgers under 'Duties & Taxes'
+    available_ledgers = data.loc[data['$Led_Group'] == 'Duties & Taxes', '$Led_Parent'].unique().tolist()
+    selected_ledgers = get_user_selection(available_ledgers, "Select TDS Payable Ledgers")
+
+    if not selected_ledgers:
+        raise ValueError("No ledgers were selected under 'Duties & Taxes'.")
+
+    # Step 3: Select the Winman TDS Register file
+    winman_file = askopenfilenames(
+        title="Select Winman TDS Register Excel File",
+        filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")]
+    )
+
+    if not winman_file:
+        raise ValueError("No Winman TDS Register file was selected.")
+    
+    winman_file = winman_file[0]  # Only one Winman file is expected
+
+    # Query 1: TDS_Report_Master
+    tds_filtered_data = data.loc[
+        (data['$Led_Group'] == 'Duties & Taxes') &
+        (data['$Led_Parent'].isin(selected_ledgers)) &
+        (~data['$Party_LedName'].str.contains('Ascent The', case=False, na=False)) &
+        (data['$Led_PAN'].notna())
+    ]
+    
+    tds_filtered_data = tds_filtered_data.fillna('Missing')
+    tds_filtered_data['TDS Ledger'] = (
+        tds_filtered_data.groupby('$Led_PAN')['$Particulars']
+        .transform(lambda x: ' & '.join(x.dropna().unique()))
+    )
+    
+    tds_report_master = (
+        tds_filtered_data.groupby(['$Led_PAN', 'TDS Ledger'], as_index=False)
+        .agg({'$Amount': 'sum'})
+    )
+    tds_report_master.rename(columns={'$Amount': 'TDSAmount'}, inplace=True)
+
+    # Query 2: TDS Expense Analysis
+    tds_expense_analysis = data.loc[data['$Led_Group'].isin(['Direct Expenses', 'Indirect Expenses'])].copy()
+    grouping_columns = ['Branch', '$Led_Group', '$Particulars', '$Led_Parent', '$Party_LedName', '$Led_PAN']
+    tds_expense_analysis[grouping_columns] = tds_expense_analysis[grouping_columns].fillna('Missing')
+    tds_expense_analysis = (
+        tds_expense_analysis.groupby(grouping_columns, as_index=False)
+        .agg({'$Amount': 'sum'})
+    )
+    tds_expense_analysis.rename(columns={'$Amount': 'ExpenseAmount'}, inplace=True)
+
+    # Query 3: Purchase Analysis
+    purchase_analysis = data.loc[data['$Led_Group'] == 'Purchase Accounts'].copy()
+    purchase_analysis.fillna("null", inplace=True)
+    purchase_analysis_summary = (
+        purchase_analysis.groupby(["$Led_PAN", "$Particulars"], as_index=False)
+        .agg({'$Amount': 'sum'})
+    )
+    purchase_analysis_summary.rename(columns={'$Amount': 'PurchaseAmount'}, inplace=True)
+
+    # Query 4: Sales Analysis
+    sales_analysis = data.loc[data['$Led_Group'] == 'Sales Accounts'].copy()
+    sales_analysis.fillna("null", inplace=True)
+    sales_analysis_summary = (
+        sales_analysis.groupby(["$Led_PAN", "$VoucherTypeName"], as_index=False)
+        .agg({'$Amount': 'sum'})
+    )
+    sales_analysis_summary.rename(columns={'$Amount': 'SalesAmount'}, inplace=True)
+
+    # Merge all data into final report
+    final_report = tds_report_master.merge(tds_expense_analysis, on="$Led_PAN", how="left")
+    final_report = final_report.merge(purchase_analysis_summary, on="$Led_PAN", how="left")
+    final_report = final_report.merge(sales_analysis_summary, on="$Led_PAN", how="left")
+
+    # Save the final output
+    save_path = asksaveasfilename(
+        defaultextension=".xlsx",
+        filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
+        title="Select location to save the final output Excel file"
+    )
+
+    if save_path:
+        with pd.ExcelWriter(save_path) as writer:
+            final_report.to_excel(writer, sheet_name='Final_Report', index=False)
+            tds_report_master.to_excel(writer, sheet_name='TDS_Report_Master', index=False)
+            tds_expense_analysis.to_excel(writer, sheet_name='TDS_Expense_Analysis', index=False)
+            purchase_analysis_summary.to_excel(writer, sheet_name='Purchase_Analysis', index=False)
+            sales_analysis_summary.to_excel(writer, sheet_name='Sales_Analysis', index=False)
+        
+        logging.info(f"The final report has been successfully saved to: {save_path}")
+    else:
+        logging.warning("Save operation was canceled.")
+
+except FileNotFoundError as fnf_error:
+    logging.error(f"File not found: {fnf_error}")
+except Exception as e:
+    logging.error(f"An error occurred: {e}")
