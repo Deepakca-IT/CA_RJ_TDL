@@ -1,0 +1,137 @@
+import os
+import pandas as pd
+import tkinter as tk
+from tkinter import filedialog
+from datetime import datetime
+
+def get_branch_name(filename):
+    """
+    Extracts the branch name from the filename.
+    Assumes the branch name is the part before the first underscore.
+    """
+    return filename.split('_')[0]
+
+def load_master_data(folder_path, file_suffix):
+    """
+    Loads all branch-wise MasterData files and creates a dictionary with branch names as keys.
+    """
+    master_data = {}
+    all_files = [f for f in os.listdir(folder_path) if f.endswith(f'_{file_suffix}.csv')]
+    
+    for file in all_files:
+        branch_name = get_branch_name(file)
+        file_path = os.path.join(folder_path, file)
+        try:
+            df = pd.read_csv(file_path)
+            if '$Name' in df.columns and '$IncomeTaxNumber' in df.columns:
+                master_data[branch_name] = df[['$Name', '$IncomeTaxNumber']]
+            else:
+                print(f"Skipping {file} as required columns are missing.")
+        except Exception as e:
+            print(f"Error reading {file}: {e}")
+    
+    return master_data
+
+def consolidate_files(folder_path, file_suffix, output_folder, master_data):
+    """
+    Consolidates all CSV files with the specified suffix within the folder,
+    adding a 'Branch' column and merging the IncomeTaxNumber from the MasterData.
+    """
+    all_files = [f for f in os.listdir(folder_path) if f.endswith(f'_{file_suffix}.csv')]
+    
+    if not all_files:
+        print(f"No files found for {file_suffix} consolidation.")
+        return None
+    
+    consolidated_data = []
+    
+    for file in all_files:
+        branch_name = get_branch_name(file)
+        file_path = os.path.join(folder_path, file)
+        try:
+            df = pd.read_csv(file_path)
+            df.insert(0, 'Branch', branch_name)  # Add branch name as the first column
+            
+            # Merge with master data if available
+            if branch_name in master_data:
+                df = df.merge(master_data[branch_name], left_on='$PartyLedgerName', right_on='$Name', how='left')
+                df.drop(columns=['$Name'], inplace=True)  # Remove redundant column
+            
+            consolidated_data.append(df)
+        except Exception as e:
+            print(f"Error reading {file}: {e}")
+    
+    if consolidated_data:
+        conso_df = pd.concat(consolidated_data, ignore_index=True)
+        return conso_df
+    else:
+        print(f"No data to consolidate for {file_suffix}.")
+        return None
+
+def save_large_transactions(conso_df, output_folder):
+    """
+    Saves the consolidated Transactions dataframe into multiple files if the number of rows exceeds 1,048,576.
+    """
+    if conso_df is None:
+        print("No valid Transactions data found.")
+        return []
+    
+    max_rows = 1048576  # Maximum rows per file
+    num_files = (len(conso_df) // max_rows) + 1
+    
+    log_entries = []
+    for i in range(num_files):
+        start_row = i * max_rows
+        end_row = (i + 1) * max_rows
+        chunk = conso_df[start_row:end_row]
+        
+        output_filename = f"Transactions_{i+1}.csv"
+        output_path = os.path.join(output_folder, output_filename)
+        chunk.to_csv(output_path, index=False)
+        log_entries.append((output_filename, len(chunk)))
+        print(f"Saved {output_filename} with {len(chunk)} rows.")
+    
+    return log_entries
+
+def save_log_file(output_folder, log_entries):
+    """
+    Saves a log file containing the export date and the number of rows in each file.
+    """
+    log_file_path = os.path.join(output_folder, "Export_Log.txt")
+    with open(log_file_path, 'w') as log_file:
+        log_file.write(f"Export Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        log_file.write("File Name, Number of Rows\n")
+        for filename, row_count in log_entries:
+            log_file.write(f"{filename}, {row_count}\n")
+    print(f"Log file saved as {log_file_path}")
+
+# Open folder selection dialog for input files
+root = tk.Tk()
+root.withdraw()
+input_folder = filedialog.askdirectory(title="Select Folder Containing CSV Files")
+
+if input_folder:
+    output_folder = filedialog.askdirectory(title="Select Folder to Save Exported Files")
+    
+    if output_folder:
+        # Load MasterData into a dictionary
+        master_data = load_master_data(input_folder, "MasterData")
+        
+        # Consolidate MasterData files
+        masterdata_df = consolidate_files(input_folder, "MasterData", output_folder, {})
+        if masterdata_df is not None:
+            output_path = os.path.join(output_folder, "Conso_MasterData.csv")
+            masterdata_df.to_csv(output_path, index=False)
+            print(f"Consolidated MasterData saved as Conso_MasterData.csv")
+        
+        # Consolidate Transactions files and merge with MasterData
+        transactions_df = consolidate_files(input_folder, "Transactions", output_folder, master_data)
+        if transactions_df is not None:
+            log_entries = save_large_transactions(transactions_df, output_folder)
+            save_log_file(output_folder, log_entries)
+        
+        print("Consolidation and splitting completed successfully.")
+    else:
+        print("No output folder selected.")
+else:
+    print("No input folder selected.")
