@@ -2,5 +2,7 @@
 Ledger Analysis using CA Ramajayam's TDL
 For Both Group Companies and Standalone Companies
 
-# Group Companies"
+# Group Companies
   1.
+  2.
+  3.Need to fill in the Group company name inside the code "3.Reports" code.Need to find a alternative way to make the word dynamic by showing a pop up window to type the name
