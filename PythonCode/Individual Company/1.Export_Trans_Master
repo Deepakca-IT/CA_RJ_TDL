@@ -38,7 +38,7 @@ print("--- %s seconds for reading transactions ---" % (time.time() - start_time)
 
 # Query 2: Master Data
 start_time2 = time.time()
-query2 = '''SELECT $Name,$_PrimaryGroup,$Parent,$OpeningBalance,$ClosingBalance,$_PrevYearBalance,$IsRevenue,$PartyGSTIN,$Nature_Led,$PAN FROM A__Ledger10'''  
+query2 = '''SELECT $Name,$_PrimaryGroup,$Parent,$OpeningBalance,$Total_Debit,$Total_Credit,$ClosingBalance,$PartyGSTIN,$Nature_Led,$PAN FROM A__Ledger10'''  
 df2 = pd.read_sql(query2, cnxn)
 print("--- %s seconds for reading master data ---" % (time.time() - start_time2))
 
