@@ -1,0 +1,94 @@
+import pandas as pd
+from tkinter import filedialog, Tk
+
+# Step 1: File Selection Popups
+def select_input_file():
+    root = Tk()
+    root.withdraw()
+    file_path = filedialog.askopenfilename(
+        title="Select CSV File",
+        filetypes=[("CSV Files", "*.csv")]
+    )
+    root.destroy()
+    return file_path
+
+def select_output_path():
+    root = Tk()
+    root.withdraw()
+    save_path = filedialog.asksaveasfilename(
+        title="Save Report As",
+        defaultextension=".xlsx",
+        filetypes=[("Excel Files", "*.xlsx")],
+        initialfile="reports.xlsx"
+    )
+    root.destroy()
+    return save_path
+
+# Step 2: Load Data
+csv_path = select_input_file()
+if not csv_path:
+    print("No input file selected. Exiting.")
+    exit()
+
+df = pd.read_csv(csv_path)
+
+# Step 3: Generate Reports
+
+# Columns to drop for each report
+cols_to_drop_1_2_4_5 = ['$_PrimaryGroup', '$Nature_Led']
+cols_to_drop_3 = ['$_PrimaryGroup', '$pan', '$Nature_Led']
+
+# Report 1: Sundry Debtors (same opening & closing balance, exclude 0)
+report1 = df[
+    (df['$_PrimaryGroup'] == "Sundry Debtors") &
+    (df['$OpeningBalance'] == df['$ClosingBalance']) &
+    (df['$ClosingBalance'] != 0)
+].drop(columns=cols_to_drop_1_2_4_5, errors='ignore')
+
+# Report 2: Sundry Creditors (same opening & closing balance, exclude 0)
+report2 = df[
+    (df['$_PrimaryGroup'] == "Sundry Creditors") &
+    (df['$OpeningBalance'] == df['$ClosingBalance']) &
+    (df['$ClosingBalance'] != 0)
+].drop(columns=cols_to_drop_1_2_4_5, errors='ignore')
+
+# Report 3: Sundry Debtors/Creditors with PAN length ≠ 10 AND at least one non-zero balance
+balance_cols = ['$OpeningBalance', '$Total_Debit', '$Total_Credit', '$ClosingBalance']
+
+# Step 1: Fill NA/blank with 0
+df_report3 = df.copy()
+df_report3[balance_cols] = df_report3[balance_cols].fillna(0)
+
+# Step 2: Filter for rows where ANY balance column is not 0
+report3 = df_report3[
+    (df_report3['$_PrimaryGroup'].isin(["Sundry Debtors", "Sundry Creditors"])) &
+    (df_report3['$pan'].astype(str).str.len() != 10) &
+    (df_report3[balance_cols] != 0).any(axis=1)  # <-- THIS IS THE KEY CHANGE
+].drop(columns=['$_PrimaryGroup', '$pan', '$Nature_Led'], errors='ignore')
+
+# Report 4: Sundry Debtors with Closing Credit Balance (>0)
+report4 = df[
+    (df['$_PrimaryGroup'] == "Sundry Debtors") &
+    (df['$ClosingBalance'] > 0)
+].drop(columns=cols_to_drop_1_2_4_5, errors='ignore')
+
+# Report 5: Sundry Creditors with Closing Debit Balance (<0)
+report5 = df[
+    (df['$_PrimaryGroup'] == "Sundry Creditors") &
+    (df['$ClosingBalance'] < 0)
+].drop(columns=cols_to_drop_1_2_4_5, errors='ignore')
+
+# Step 4: Save Reports
+output_path = select_output_path()
+if not output_path:
+    print("No save location selected. Exiting.")
+    exit()
+
+with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+    report1.to_excel(writer, sheet_name="Debtors_Same_Balance", index=False)
+    report2.to_excel(writer, sheet_name="Creditors_Same_Balance", index=False)
+    report3.to_excel(writer, sheet_name="Invalid_PAN_ZeroBal", index=False)
+    report4.to_excel(writer, sheet_name="Debtors_Credit_Balance", index=False)
+    report5.to_excel(writer, sheet_name="Creditors_Debit_Balance", index=False)
+
+print(f"All reports saved to: {output_path}")
