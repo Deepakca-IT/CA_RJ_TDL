@@ -33,7 +33,7 @@ except Exception as e:
 
 # Query: Master Data
 start_time = time.time()
-query = '''SELECT $LName, $Parent, $_PrimaryGroup,  $OpeningBalance, $ClosingBalance, $ExOwnerCompany, $_PrevYearBalance FROM A_M_LedgerGrp'''  
+query = '''SELECT $LName, $Parent, $_PrimaryGroup,  $OpeningBalance, $ClosingBalance, $ExOwnerCompany, $IsRevenue FROM A_M_LedgerGrp'''  
 df = pd.read_sql(query, cnxn)
 print("--- %s seconds for reading master data ---" % (time.time() - start_time))
 
