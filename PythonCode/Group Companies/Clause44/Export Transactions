@@ -1,0 +1,68 @@
+import pyodbc
+import warnings
+import pandas as pd
+import time
+import os
+from tkinter import Tk, filedialog
+
+warnings.filterwarnings('ignore')
+
+# Hide the Tkinter root window
+root = Tk()
+root.withdraw()
+
+# Define server and port
+server = 'localhost'
+port = '9000'
+
+# Connect to Tally ODBC without pop-ups
+try:
+    cnxn = pyodbc.connect('DSN=TallyODBC64_9000;UID=;PWD=;')
+    cursor = cnxn.cursor()
+    print("✅ Connected to Tally ODBC successfully!")
+except Exception as e:
+    print(f"❌ Error connecting to Tally ODBC: {e}")
+    exit()
+
+# Query: Transactions Data only
+start_time = time.time()
+query1 = '''
+SELECT 
+    $VoucherNumber,
+    $Date,
+    $VoucherTypeName,
+    $VchTypeParent,
+    $Particulars, 
+    $Amount,
+    $Led_Parent, 
+    $Led_Group,
+    $Party_LedName,
+    $Led_GSTIN,
+    $Led_PAN 
+FROM A__T_Vch10
+'''
+df1 = pd.read_sql(query1, cnxn)
+print("--- %s seconds for reading transactions ---" % (time.time() - start_time))
+
+# ✅ Apply filter on $Led_Group
+filter_groups = ["Indirect Expenses", "Purchase Accounts", "Direct Expenses", "Fixed Assets"]
+df1 = df1[df1["$Led_Group"].isin(filter_groups)]
+
+# Ask user where to save Transactions file
+transactions_file = filedialog.asksaveasfilename(
+    defaultextension=".csv",
+    filetypes=[("CSV files", "*.csv")],
+    title="Save Transactions File",
+    initialfile="Transactions.csv"
+)
+
+# If the user cancels the dialog, exit
+if not transactions_file:
+    print("❌ Transaction file save canceled. Exiting.")
+    exit()
+
+# Save file
+df1.to_csv(transactions_file, index=False)
+
+print("✅ File saved successfully!")
+print(f"  - Transactions: {transactions_file}")
