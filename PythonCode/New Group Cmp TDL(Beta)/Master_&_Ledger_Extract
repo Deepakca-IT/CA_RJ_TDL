@@ -32,13 +32,13 @@ except Exception as e:
 
 # Query 1: Transactions Data
 start_time = time.time()
-query1 = '''SELECT $VoucherTypeName, $VoucherNumber, $Date, $LedgerName,  $Amount, $_Narration,  $Ledger_Parent, $Ledger_PrimaryGroup, $Party_LedgerName, $PARTY_GST_number, $Led_IS_Revenue, $ExOwnerCompany FROM A_T_DayBookGrp'''
+query1 = '''SELECT $VoucherTypeName, $VoucherNumber, $Date, $LedgerName,  $Amount, $_Narration,  $Ledger_Parent, $Ledger_PrimaryGroup, $Party_LedgerName, $PARTY_GST_number, $Led_IS_Revenue, $ExOwnerCompany FROM A__T_DayBook_Grp'''
 df1 = pd.read_sql(query1, cnxn)
 print("--- %s seconds for reading transactions ---" % (time.time() - start_time))
 
 # Query 2: Master Data
 start_time2 = time.time()
-query2 = '''SELECT $LName, $Parent, $_PrimaryGroup,  $OpeningBalance, $ClosingBalance, $ExOwnerCompany, $_PrevYearBalance FROM A_M_LedgerGrp'''  
+query2 = '''SELECT $LName, $Parent, $_PrimaryGroup,  $OpeningBalance, $ClosingBalance, $ExOwnerCompany, $_PrevYearBalance FROM A__M_Ledger_Grp'''  
 df2 = pd.read_sql(query2, cnxn)
 print("--- %s seconds for reading master data ---" % (time.time() - start_time2))
 
