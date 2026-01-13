@@ -1,0 +1,296 @@
+# ================= FINAL CORRECTED SCRIPT =================
+# Expense-wise TDS Analysis with Hyperlinked Index (openpyxl only)
+# GUARANTEE:
+# - No business logic changed
+# - No xlsxwriter dependency
+# - Winman PAN issue fixed
+# - Existing reports untouched
+
+import os
+import pandas as pd
+import logging
+from tkinter import Tk, Toplevel, Listbox, MULTIPLE, Button, END
+from tkinter.filedialog import askopenfilenames, asksaveasfilename
+from openpyxl.utils import get_column_letter
+
+# -------------------------------------------------
+# Logging
+# -------------------------------------------------
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# -------------------------------------------------
+# UI FUNCTIONS
+# -------------------------------------------------
+
+def select_expenses(expense_list):
+    selected = []
+    win = Toplevel()
+    win.title("Select Expenses to INCLUDE")
+
+    lb = Listbox(win, selectmode=MULTIPLE, width=60, height=20)
+    lb.pack(padx=10, pady=10)
+
+    for item in expense_list:
+        lb.insert(END, item)
+
+    def confirm():
+        for i in lb.curselection():
+            selected.append(lb.get(i))
+        win.destroy()
+
+    Button(win, text="Confirm Selection", command=confirm).pack(pady=10)
+    win.wait_window()
+    return selected
+
+
+def select_reports():
+    selected = []
+    win = Toplevel()
+    win.title("Select Reports to Generate")
+
+    reports = [
+        "Final_Merged_Report",
+        "TDS_Report_Master",
+        "Winman_TDS_Register",
+        "Purchase_Analysis",
+        "Sales_Analysis"
+    ]
+
+    lb = Listbox(win, selectmode=MULTIPLE, width=50, height=10)
+    lb.pack(padx=10, pady=10)
+
+    for r in reports:
+        lb.insert(END, r)
+
+    def confirm():
+        for i in lb.curselection():
+            selected.append(lb.get(i))
+        win.destroy()
+
+    Button(win, text="Confirm Selection", command=confirm).pack(pady=10)
+    win.wait_window()
+    return selected
+
+# -------------------------------------------------
+# MAIN PROCESS
+# -------------------------------------------------
+try:
+    root = Tk()
+    root.withdraw()
+
+    selected_reports = select_reports()
+    if not selected_reports:
+        raise ValueError("No reports selected")
+
+    # ---- INPUT CSV FILES ----
+    input_files = askopenfilenames(
+        title="Select Input CSV Files",
+        filetypes=[("CSV files", "*.csv")]
+    )
+    if not input_files:
+        raise ValueError("No input CSV selected")
+
+    data = pd.concat([pd.read_csv(f) for f in input_files], ignore_index=True)
+
+    required_columns = [
+        '$VoucherTypeName', '$Particulars', '$Amount', '$Led_Parent',
+        '$Led_Group', '$Party_LedName', '$Led_PAN'
+    ]
+    if not all(c in data.columns for c in required_columns):
+        raise ValueError("Missing required columns in CSV")
+
+    # ---- WINMAN FILE ----
+    winman_file = askopenfilenames(
+        title="Select Winman TDS Register",
+        filetypes=[("Excel files", "*.xlsx")]
+    )
+    if not winman_file:
+        raise ValueError("No Winman file selected")
+    winman_file = winman_file[0]
+
+    # -------------------------------------------------
+    # TDS REPORT MASTER
+    # -------------------------------------------------
+    if (
+        "TDS_Report_Master" in selected_reports or
+        "Final_Merged_Report" in selected_reports or
+        "Purchase_Analysis" in selected_reports
+    ):
+        tds_filtered_data = data.loc[
+            (data['$Led_Group'] == 'Duties & Taxes') &
+            (data['$Led_Parent'] == 'TDS Payable A/c.') &
+            (~data['$Party_LedName'].str.contains('Ascent The', case=False, na=False)) &
+            (data['$Led_PAN'].notna())
+        ].fillna('Missing')
+
+        tds_filtered_data['TDS Ledger'] = (
+            tds_filtered_data.groupby('$Led_PAN')['$Particulars']
+            .transform(lambda x: ' & '.join(x.dropna().unique()))
+        )
+
+        tds_report_master = (
+            tds_filtered_data
+            .groupby(['$Led_PAN', 'TDS Ledger'], as_index=False)
+            .agg({'$Amount': 'sum'})
+        )
+        tds_report_master.rename(columns={'$Amount': 'TDSAmount'}, inplace=True)
+
+    # -------------------------------------------------
+    # FINAL MERGED REPORT (EXPENSE BASE)
+    # -------------------------------------------------
+    if "Final_Merged_Report" in selected_reports:
+        tds_expense_analysis = data.loc[
+            data['$Led_Group'].isin(['Direct Expenses', 'Indirect Expenses'])
+        ].copy()
+
+        unique_expenses = sorted(tds_expense_analysis['$Particulars'].dropna().unique())
+        selected_expenses = select_expenses(unique_expenses)
+
+        tds_expense_analysis = tds_expense_analysis[
+            tds_expense_analysis['$Particulars'].isin(selected_expenses)
+        ]
+
+        grouping_columns = ['$Led_Group', '$Particulars', '$Led_Parent', '$Party_LedName', '$Led_PAN']
+        tds_expense_analysis[grouping_columns] = tds_expense_analysis[grouping_columns].fillna('Missing')
+
+        tds_expense_analysis = (
+            tds_expense_analysis
+            .groupby(grouping_columns, as_index=False)
+            .agg({'$Amount': 'sum'})
+        )
+        tds_expense_analysis.rename(columns={'$Amount': 'ExpenseAmount'}, inplace=True)
+        tds_expense_analysis['ExpenseAmount'] *= -1
+
+        merged_data = tds_expense_analysis.merge(
+            tds_report_master[['$Led_PAN', 'TDSAmount', 'TDS Ledger']],
+            on='$Led_PAN',
+            how='left'
+        )
+
+    # -------------------------------------------------
+    # WINMAN DEDUCTION DATA (PAN FIXED)
+    # -------------------------------------------------
+    sheet_data = pd.read_excel(winman_file, sheet_name="Deduction", skiprows=3)
+    sheet_data.columns = [
+        "Challan ID", "Name", "PAN", "Type of Deductee", "PAN validation result",
+        "Section 206AB applicable?", "PAN Status", "Amount Paid / Credited",
+        "Paid / Credited Date", "Cash withdrawal exceeding limit", "Deduction Date",
+        "Deducted and deposited - Tax", "Total Tax - deducted and deposited",
+        "Deduction Rate", "Reason for Lower/Higher Deduction",
+        "Certificate number u/s 197", "Section", "194N Deduction Type",
+        "Shortfall/Excess (-)", "Quarter"
+    ]
+
+    sheet_data = sheet_data.astype(str).fillna("null")
+    sheet_data["Total Tax - deducted and deposited"] = pd.to_numeric(
+        sheet_data["Total Tax - deducted and deposited"], errors="coerce"
+    ).fillna(0)
+    sheet_data["PAN"] = sheet_data["PAN"].str.replace(" ", "")
+
+    grouped_winman_data = (
+        sheet_data[["PAN", "Name", "Total Tax - deducted and deposited", "Section"]]
+        .groupby(["PAN", "Name"], as_index=False)
+        .agg(
+            TDS_Deposited=("Total Tax - deducted and deposited", "sum"),
+            Section=("Section", lambda x: " & ".join(sorted(set(x))))
+        )
+    )
+
+    if "Final_Merged_Report" in selected_reports:
+        merged_data = merged_data.merge(
+
+            grouped_winman_data,
+            left_on="$Led_PAN",
+            right_on="PAN",
+            how="left"
+        )
+
+    # -------------------------------------------------
+    # SAVE OUTPUT
+    # -------------------------------------------------
+    save_path = asksaveasfilename(defaultextension=".xlsx")
+    if not save_path:
+        raise ValueError("Save cancelled")
+
+    with pd.ExcelWriter(save_path) as writer:
+
+        if "Final_Merged_Report" in selected_reports:
+            merged_data.to_excel(writer, sheet_name="Final_Merged_Report", index=False)
+
+        if "TDS_Report_Master" in selected_reports:
+            tds_report_master.to_excel(writer, sheet_name="TDS_Report_Master", index=False)
+
+        if "Winman_TDS_Register" in selected_reports:
+            grouped_winman_data.to_excel(writer, sheet_name="Winman_TDS_Register", index=False)
+
+        # -------------------------------------------------
+        # EXPENSE WISE SINGLE SHEET REPORT (NEW)
+        # -------------------------------------------------
+        if "Final_Merged_Report" in selected_reports:
+
+            sheet_name = "Expense_Wise_TDS_Analysis"
+            workbook = writer.book
+            worksheet = workbook.create_sheet(title=sheet_name)
+            writer.sheets[sheet_name] = worksheet
+
+            START_DATA_ROW = 10
+            INDEX_ROWS = 7
+            START_COL = 1
+
+            expense_list = sorted(merged_data['$Particulars'].dropna().unique())
+            current_row = START_DATA_ROW
+            expense_row_map = {}
+
+            columns = [
+                '$Party_LedName', '$Led_PAN', 'ExpenseAmount',
+                'TDSAmount', 'TDS Ledger',
+                'PAN', 'Name', 'TDS_Deposited', 'Section'
+            ]
+
+            # ---- WRITE EXPENSE BLOCKS ----
+            for expense in expense_list:
+                expense_row_map[expense] = current_row + 1
+                worksheet.cell(row=current_row + 1, column=START_COL).value = f"Expense : {expense}"
+                current_row += 1
+
+                for c, col in enumerate(columns):
+                    worksheet.cell(row=current_row + 1, column=START_COL + c).value = col
+
+                current_row += 1
+                data_start = current_row + 1
+
+                exp_df = merged_data[merged_data['$Particulars'] == expense][columns]
+                for _, r in exp_df.iterrows():
+                    for c, v in enumerate(r):
+                        worksheet.cell(row=current_row + 1, column=START_COL + c).value = v
+                    current_row += 1
+
+                worksheet.cell(row=current_row + 1, column=START_COL).value = f"TOTAL – {expense}"
+
+                exp_col = columns.index("ExpenseAmount") + START_COL
+                tds_col = columns.index("TDSAmount") + START_COL
+
+                worksheet.cell(row=current_row + 1, column=exp_col).value = (
+                    f"=SUM({get_column_letter(exp_col)}{data_start}:{get_column_letter(exp_col)}{current_row})"
+                )
+                worksheet.cell(row=current_row + 1, column=tds_col).value = (
+                    f"=SUM({get_column_letter(tds_col)}{data_start}:{get_column_letter(tds_col)}{current_row})"
+                )
+
+                current_row += 2
+
+            # ---- INDEX WITH HYPERLINKS ----
+            worksheet.cell(row=1, column=1).value = "Expense Index"
+            r, c = 2, 1
+            for expense in expense_list:
+                cell = worksheet.cell(row=r, column=c)
+                cell.value = expense
+                cell.hyperlink = f"#{sheet_name}!A{expense_row_map[expense]}"
+                cell.style = "Hyperlink"
+                r += 1
+                if r > INDEX_ROWS + 1:
+                    r = 2
+                    c += 1
+
+except Exception as e:
+    logging.error(f"Error: {e}")
