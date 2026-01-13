@@ -1,0 +1,280 @@
+import os
+import pandas as pd
+import logging
+from tkinter import Tk, Toplevel, Listbox, MULTIPLE, Button, END
+from tkinter.filedialog import askopenfilenames, asksaveasfilename
+
+# Setup logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+
+def select_expenses(expense_list):
+    selected = []
+
+    win = Toplevel()
+    win.title("Select Expenses to INCLUDE")
+
+    lb = Listbox(win, selectmode=MULTIPLE, width=60, height=20)
+    lb.pack(padx=10, pady=10)
+
+    for item in expense_list:
+        lb.insert(END, item)
+
+    def confirm():
+        for i in lb.curselection():
+            selected.append(lb.get(i))
+        win.destroy()
+
+    Button(win, text="Confirm Selection", command=confirm).pack(pady=10)
+    win.wait_window()
+
+    return selected
+
+
+# ✅ NEW FUNCTION – REPORT SELECTION
+def select_reports():
+    selected = []
+
+    win = Toplevel()
+    win.title("Select Reports to Generate")
+
+    reports = [
+        "Final_Merged_Report",
+        "TDS_Report_Master",
+        "Winman_TDS_Register",
+        "Purchase_Analysis",
+        "Sales_Analysis"
+    ]
+
+    lb = Listbox(win, selectmode=MULTIPLE, width=50, height=10)
+    lb.pack(padx=10, pady=10)
+
+    for report in reports:
+        lb.insert(END, report)
+
+    def confirm():
+        for i in lb.curselection():
+            selected.append(lb.get(i))
+        win.destroy()
+
+    Button(win, text="Confirm Selection", command=confirm).pack(pady=10)
+    win.wait_window()
+
+    return selected
+
+
+try:
+    # Step 1: Select input CSV files
+    root = Tk()
+    root.withdraw()
+
+    # ✅ REPORT SELECTION AT START
+    selected_reports = select_reports()
+    if not selected_reports:
+        raise ValueError("No reports selected.")
+
+    input_files = askopenfilenames(
+        title="Select Input CSV Files",
+        filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+    )
+
+    if not input_files:
+        raise ValueError("No input files were selected.")
+
+    dataframes = [pd.read_csv(file) for file in input_files]
+    data = pd.concat(dataframes, ignore_index=True)
+
+    required_columns = [
+        '$VoucherTypeName', '$Particulars', '$Amount', '$Led_Parent',
+        '$Led_Group', '$Party_LedName', '$Led_PAN'
+    ]
+    if not all(col in data.columns for col in required_columns):
+        raise ValueError("Missing required columns.")
+
+    # Step 2: Select Winman TDS Register
+    winman_file = askopenfilenames(
+        title="Select Winman TDS Register Excel File",
+        filetypes=[("Excel files", "*.xlsx")]
+    )
+
+    if not winman_file:
+        raise ValueError("No Winman file selected.")
+
+    winman_file = winman_file[0]
+
+    # ---------------- TDS REPORT MASTER ----------------
+    if (
+        "TDS_Report_Master" in selected_reports or
+        "Final_Merged_Report" in selected_reports or
+        "Purchase_Analysis" in selected_reports
+    ):
+        tds_filtered_data = data.loc[
+            (data['$Led_Group'] == 'Duties & Taxes') &
+            (data['$Led_Parent'] == 'TDS Payable A/c.') &
+            (~data['$Party_LedName'].str.contains('Ascent The', case=False, na=False)) &
+            (data['$Led_PAN'].notna())
+        ].fillna('Missing')
+
+        tds_filtered_data['TDS Ledger'] = (
+            tds_filtered_data.groupby('$Led_PAN')['$Particulars']
+            .transform(lambda x: ' & '.join(x.dropna().unique()))
+        )
+
+        tds_report_master = (
+            tds_filtered_data
+            .groupby(['$Led_PAN', 'TDS Ledger'], as_index=False)
+            .agg({'$Amount': 'sum'})
+        )
+        tds_report_master.rename(columns={'$Amount': 'TDSAmount'}, inplace=True)
+
+    # ---------------- FINAL MERGED REPORT ----------------
+    if "Final_Merged_Report" in selected_reports:
+        tds_expense_analysis = data.loc[
+            data['$Led_Group'].isin(['Direct Expenses', 'Indirect Expenses'])
+        ].copy()
+
+        unique_expenses = sorted(tds_expense_analysis['$Particulars'].dropna().unique())
+        selected_expenses = select_expenses(unique_expenses)
+
+        tds_expense_analysis = tds_expense_analysis[
+            tds_expense_analysis['$Particulars'].isin(selected_expenses)
+        ]
+
+        grouping_columns = ['$Led_Group', '$Particulars', '$Led_Parent', '$Party_LedName', '$Led_PAN']
+        tds_expense_analysis[grouping_columns] = tds_expense_analysis[grouping_columns].fillna('Missing')
+
+        tds_expense_analysis = (
+            tds_expense_analysis
+            .groupby(grouping_columns, as_index=False)
+            .agg({'$Amount': 'sum'})
+        )
+        tds_expense_analysis.rename(columns={'$Amount': 'ExpenseAmount'}, inplace=True)
+        tds_expense_analysis['ExpenseAmount'] *= -1
+
+        merged_data = tds_expense_analysis.merge(
+            tds_report_master[['$Led_PAN', 'TDSAmount', 'TDS Ledger']],
+            on='$Led_PAN',
+            how='left'
+        )
+
+    # ---------------- PURCHASE ANALYSIS ----------------
+    if "Purchase_Analysis" in selected_reports:
+        purchase_analysis = data.loc[data['$Led_Group'] == 'Purchase Accounts'].copy()
+        purchase_analysis.fillna("null", inplace=True)
+
+        purchase_analysis['$Led_PAN'] = purchase_analysis.apply(
+            lambda r: r['$Party_LedName'] if r['$Led_PAN'] == "null" else r['$Led_PAN'], axis=1
+        )
+
+        purchase_analysis["PartyLedgerName"] = (
+            purchase_analysis.groupby('$Led_PAN')['$Party_LedName']
+            .transform(lambda x: ' & '.join(x.dropna().unique()))
+        )
+        purchase_analysis.drop(columns=['$Party_LedName'], inplace=True)
+
+        purchase_analysis_summary = (
+            purchase_analysis
+            .groupby(["PartyLedgerName", "$Led_PAN", "$Particulars"], as_index=False)
+            .agg({'$Amount': 'sum'})
+        )
+        purchase_analysis_summary.rename(columns={'$Amount': 'PurchaseAmount'}, inplace=True)
+
+        purchase_analysis_merged = purchase_analysis_summary.merge(
+            tds_report_master[['$Led_PAN', 'TDSAmount', 'TDS Ledger']],
+            on='$Led_PAN',
+            how='left'
+        )
+
+    # ---------------- SALES ANALYSIS ----------------
+    if "Sales_Analysis" in selected_reports:
+        sales_analysis = data.loc[data['$Led_Group'] == 'Sales Accounts'].copy()
+        sales_analysis.fillna("null", inplace=True)
+
+        sales_analysis['$Led_PAN'] = sales_analysis.apply(
+            lambda r: r['$Party_LedName'] if r['$Led_PAN'] == "null" else r['$Led_PAN'], axis=1
+        )
+
+        sales_analysis["PartyLedgerName"] = (
+            sales_analysis.groupby('$Led_PAN')['$Party_LedName']
+            .transform(lambda x: ' & '.join(x.dropna().unique()))
+        )
+        sales_analysis.drop(columns=['$Party_LedName'], inplace=True)
+
+        sales_analysis_summary = (
+            sales_analysis
+            .groupby(["PartyLedgerName", "$Led_PAN", "$VoucherTypeName"], as_index=False)
+            .agg({'$Amount': 'sum'})
+        )
+        sales_analysis_summary.rename(columns={'$Amount': 'SalesAmount'}, inplace=True)
+
+        sales_pivot = sales_analysis_summary.pivot_table(
+            index=["PartyLedgerName", "$Led_PAN"],
+            columns="$VoucherTypeName",
+            values="SalesAmount",
+            aggfunc="sum",
+            fill_value=0
+        ).reset_index()
+
+    # ---------------- WINMAN TDS REGISTER ----------------
+    if (
+        "Winman_TDS_Register" in selected_reports or
+        "Final_Merged_Report" in selected_reports or
+        "Purchase_Analysis" in selected_reports
+    ):
+        excel_data = pd.ExcelFile(winman_file)
+
+        sheet_data = pd.read_excel(winman_file, sheet_name="Deduction", skiprows=3)
+        sheet_data.columns = [
+            "Challan ID", "Name", "PAN", "Type of Deductee", "PAN validation result",
+            "Section 206AB applicable?", "PAN Status", "Amount Paid / Credited",
+            "Paid / Credited Date", "Cash withdrawal exceeding limit", "Deduction Date",
+            "Deducted and deposited - Tax", "Total Tax - deducted and deposited",
+            "Deduction Rate", "Reason for Lower/Higher Deduction",
+            "Certificate number u/s 197", "Section", "194N Deduction Type",
+            "Shortfall/Excess (-)", "Quarter"
+        ]
+
+        sheet_data.fillna("null", inplace=True)
+        sheet_data["PAN"] = sheet_data["PAN"].str.replace(" ", "")
+
+        grouped_winman_data = (
+            sheet_data[["PAN", "Name", "Total Tax - deducted and deposited", "Section"]]
+            .groupby(["PAN", "Name"], as_index=False)
+            .agg(
+                TDS_Deposited=("Total Tax - deducted and deposited", "sum"),
+                Section=("Section", lambda x: " & ".join(sorted(set(x))))
+            )
+        )
+
+        if "Final_Merged_Report" in selected_reports:
+            merged_data = merged_data.merge(
+                grouped_winman_data, left_on="$Led_PAN", right_on="PAN", how="left"
+            )
+
+        if "Purchase_Analysis" in selected_reports:
+            final_Purchase_Analysis = purchase_analysis_merged.merge(
+                grouped_winman_data, left_on="$Led_PAN", right_on="PAN", how="left"
+            )
+
+    # ---------------- SAVE OUTPUT ----------------
+    save_path = asksaveasfilename(defaultextension=".xlsx")
+    if save_path:
+        with pd.ExcelWriter(save_path) as writer:
+
+            if "Final_Merged_Report" in selected_reports:
+                merged_data.to_excel(writer, sheet_name='Final_Merged_Report', index=False)
+
+            if "TDS_Report_Master" in selected_reports:
+                tds_report_master.to_excel(writer, sheet_name='TDS_Report_Master', index=False)
+
+            if "Winman_TDS_Register" in selected_reports:
+                grouped_winman_data.to_excel(writer, sheet_name='Winman_TDS_Register', index=False)
+
+            if "Purchase_Analysis" in selected_reports:
+                final_Purchase_Analysis.to_excel(writer, sheet_name='Purchase_Analysis', index=False)
+
+            if "Sales_Analysis" in selected_reports:
+                sales_pivot.to_excel(writer, sheet_name='Sales_Analysis', index=False)
+
+except Exception as e:
+    logging.error(f"Error: {e}")
