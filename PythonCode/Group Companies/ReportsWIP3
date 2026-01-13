@@ -168,12 +168,12 @@ try:
         )
 
     # -------------------------------------------------
-    # WINMAN DEDUCTION DATA (PAN FIXED)
+    # WINMAN DEDUCTION DATA (PAN FIXED-Check the number of columns in winman with this code)
     # -------------------------------------------------
     sheet_data = pd.read_excel(winman_file, sheet_name="Deduction", skiprows=3)
     sheet_data.columns = [
         "Challan ID", "Name", "PAN", "Type of Deductee", "PAN validation result",
-        "Section 206AB applicable?", "PAN Status", "Amount Paid / Credited",
+        "PAN Status", "Amount Paid / Credited",
         "Paid / Credited Date", "Cash withdrawal exceeding limit", "Deduction Date",
         "Deducted and deposited - Tax", "Total Tax - deducted and deposited",
         "Deduction Rate", "Reason for Lower/Higher Deduction",
