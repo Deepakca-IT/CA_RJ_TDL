@@ -166,9 +166,32 @@ try:
             on='$Led_PAN',
             how='left'
         )
+                # Ensure numeric safety
+        merged_data['TDSAmount'] = pd.to_numeric(
+            merged_data['TDSAmount'], errors='coerce'
+        ).fillna(0)
+        
+        merged_data['ExpenseAmount'] = pd.to_numeric(
+            merged_data['ExpenseAmount'], errors='coerce'
+        ).fillna(0)
+        
+        # --- NEW COLUMN: TDS Rate ---
+        merged_data['TDS Rate'] = (
+            merged_data['TDSAmount'] / merged_data['ExpenseAmount'].abs()
+        )
+        
+        # Handle division by zero
+        merged_data['TDS Rate'] = merged_data['TDS Rate'].replace([float('inf'), -float('inf')], 0).fillna(0)
+        
+        # --- Reorder columns to place TDS Rate after TDSAmount ---
+        cols = list(merged_data.columns)
+        tds_amt_index = cols.index('TDSAmount')
+        cols.insert(tds_amt_index + 1, cols.pop(cols.index('TDS Rate')))
+        merged_data = merged_data[cols]
+
 
     # -------------------------------------------------
-    # WINMAN DEDUCTION DATA (PAN FIXED-Check the number of columns in winman with this code)
+    # WINMAN DEDUCTION DATA (PAN FIXED)
     # -------------------------------------------------
     sheet_data = pd.read_excel(winman_file, sheet_name="Deduction", skiprows=3)
     sheet_data.columns = [
@@ -178,7 +201,7 @@ try:
         "Deducted and deposited - Tax", "Total Tax - deducted and deposited",
         "Deduction Rate", "Reason for Lower/Higher Deduction",
         "Certificate number u/s 197", "Section", "194N Deduction Type",
-        "Shortfall/Excess (-)", "Quarter"
+        "Shortfall/Excess (-)"
     ]
 
     sheet_data = sheet_data.astype(str).fillna("null")
@@ -204,6 +227,20 @@ try:
             right_on="PAN",
             how="left"
         )
+                # Ensure numeric safety
+        merged_data['TDSAmount'] = pd.to_numeric(
+            merged_data['TDSAmount'], errors='coerce'
+        ).fillna(0)
+        
+        merged_data['TDS_Deposited'] = pd.to_numeric(
+            merged_data['TDS_Deposited'], errors='coerce'
+        ).fillna(0)
+        
+        # NEW COLUMN: Difference in TDS (LAST COLUMN)
+        merged_data['Difference in TDS'] = (
+            merged_data['TDS_Deposited'] - merged_data['TDSAmount']
+        )
+
 
     # -------------------------------------------------
     # SAVE OUTPUT
@@ -243,8 +280,8 @@ try:
 
             columns = [
                 '$Party_LedName', '$Led_PAN', 'ExpenseAmount',
-                'TDSAmount', 'TDS Ledger',
-                'PAN', 'Name', 'TDS_Deposited', 'Section'
+                'TDSAmount','TDS Rate', 'TDS Ledger',
+                'PAN', 'Name', 'TDS_Deposited', 'Section','Difference in TDS'
             ]
 
             # ---- WRITE EXPENSE BLOCKS ----
