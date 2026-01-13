@@ -1,0 +1,276 @@
+import os
+import pandas as pd
+import logging
+from tkinter import Tk
+from tkinter.filedialog import askopenfilenames, asksaveasfilename
+
+# Setup logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+from tkinter import Toplevel, Listbox, MULTIPLE, Button, END
+
+def select_expenses(expense_list):
+    selected = []
+
+    win = Toplevel()
+    win.title("Select Expenses to INCLUDE")
+
+    lb = Listbox(win, selectmode=MULTIPLE, width=60, height=20)
+    lb.pack(padx=10, pady=10)
+
+    for item in expense_list:
+        lb.insert(END, item)
+
+    def confirm():
+        for i in lb.curselection():
+            selected.append(lb.get(i))
+        win.destroy()
+
+    Button(win, text="Confirm Selection", command=confirm).pack(pady=10)
+    win.wait_window()
+
+    return selected
+
+try:
+    # Step 1: Select multiple input CSV files
+    root = Tk()
+    root.withdraw()  # Hide the main tkinter window
+    input_files = askopenfilenames(
+        title="Select Input CSV Files",
+        filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+    )
+
+    if not input_files:
+        raise ValueError("No input files were selected.")
+
+    # Read and merge all selected input files
+    dataframes = [pd.read_csv(file) for file in input_files]
+    data = pd.concat(dataframes, ignore_index=True)
+
+    # Validate required columns
+    required_columns = [
+        '$VoucherTypeName', '$Particulars', '$Amount', '$Led_Parent',
+        '$Led_Group', '$Party_LedName', '$Led_PAN'
+    ]
+    if not all(col in data.columns for col in required_columns):
+        missing_columns = [col for col in required_columns if col not in data.columns]
+        raise ValueError(f"The input data is missing the following required columns: {missing_columns}")
+
+    # Step 2: Select the Winman TDS Register file
+    winman_file = askopenfilenames(
+        title="Select Winman TDS Register Excel File",
+        filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")]
+    )
+
+    if not winman_file:
+        raise ValueError("No Winman TDS Register file was selected.")
+    
+    winman_file = winman_file[0]  # Only one Winman file is expected
+
+    # Query 1: TDS_Report_Master
+    tds_filtered_data = data.loc[
+        (data['$Led_Group'] == 'Duties & Taxes') &
+        (data['$Led_Parent'] == 'TDS Payable A/c.') &
+        (~data['$Party_LedName'].str.contains('Ascent The', case=False, na=False)) &
+        (data['$Led_PAN'].notna())
+    ]
+
+    # Handle missing values in all columns
+    tds_filtered_data = tds_filtered_data.fillna('Missing')
+
+    # Add a new column "TDS Ledger" concatenating "$Particulars" for the same PAN
+    tds_filtered_data['TDS Ledger'] = (
+        tds_filtered_data.groupby('$Led_PAN')['$Particulars']
+        .transform(lambda x: ' & '.join(x.dropna().unique()))
+    )
+
+    tds_report_master = (
+        tds_filtered_data
+        .groupby(['$Led_PAN', 'TDS Ledger'], as_index=False)
+        .agg({'$Amount': 'sum'})
+    )
+    tds_report_master.rename(columns={'$Amount': 'TDSAmount'}, inplace=True)
+
+    # Query 2: TDS Expense Analysis
+    tds_expense_analysis = data.loc[data['$Led_Group'].isin(['Direct Expenses', 'Indirect Expenses'])].copy()
+    unique_expenses = sorted(
+        tds_expense_analysis['$Particulars'].dropna().unique()
+    )
+    
+    selected_expenses = select_expenses(unique_expenses)
+    
+    tds_expense_analysis = tds_expense_analysis[
+        tds_expense_analysis['$Particulars'].isin(selected_expenses)
+    ]
+
+
+    # Handle missing values in grouping columns
+    grouping_columns = ['$Led_Group', '$Particulars', '$Led_Parent', '$Party_LedName', '$Led_PAN']
+    tds_expense_analysis[grouping_columns] = tds_expense_analysis[grouping_columns].fillna('Missing')
+
+    # Group by and calculate ExpenseAmount
+    tds_expense_analysis = (
+        tds_expense_analysis
+        .groupby(grouping_columns, as_index=False)
+        .agg({'$Amount': 'sum'})
+    )
+    tds_expense_analysis.rename(columns={'$Amount': 'ExpenseAmount'}, inplace=True)
+    tds_expense_analysis['ExpenseAmount'] *= -1
+
+    # Sort by $Led_Group and $Particulars
+    tds_expense_analysis.sort_values(by=['$Led_Group', '$Particulars'], ascending=[True, True], inplace=True)
+
+    # Replace $Led_PAN with blank for specific $Particulars.You can use | shift+\ to add more mask
+    mask = tds_expense_analysis['$Particulars'].str.contains('Round Off', case=False, na=False)
+    tds_expense_analysis.loc[mask, '$Led_PAN'] = ''
+
+    # Step 3: Merge TDS_Report_Master with TDS Expense Analysis
+    merged_data = tds_expense_analysis.merge(
+        tds_report_master[['$Led_PAN', 'TDSAmount','TDS Ledger']],
+        on='$Led_PAN',
+        how='left'
+    )
+
+    # Step 4: Purchase Analysis (New Report)
+    purchase_analysis = data.loc[data['$Led_Group'] == 'Purchase Accounts'].copy()
+    purchase_analysis.fillna("null", inplace=True)
+    
+    # Fill blank "$Led_PAN" with respective "PartyLedgerName"
+    purchase_analysis['$Led_PAN'] = purchase_analysis.apply(
+        lambda row: row['$Party_LedName'] if row['$Led_PAN'] == "null" else row['$Led_PAN'], axis=1
+    )
+    
+    # Concatenate "$Party_LedName" for each "$Led_PAN"
+    purchase_analysis["PartyLedgerName"] = (
+        purchase_analysis.groupby('$Led_PAN')['$Party_LedName']
+        .transform(lambda x: ' & '.join(x.dropna().unique()))
+    )
+    purchase_analysis.drop(columns=['$Party_LedName'], inplace=True)
+
+    # Group by "PartyLedgerName", "$Led_PAN", "$Particulars" and sum "$Amount"
+    purchase_analysis_summary = (
+        purchase_analysis
+        .groupby(["PartyLedgerName", "$Led_PAN", "$Particulars"], as_index=False)
+        .agg({'$Amount': 'sum'})
+    )
+    purchase_analysis_summary.rename(columns={'$Amount': 'PurchaseAmount'}, inplace=True)
+
+    # Merge Purchase Analysis with TDS Report Master (Including TDSAmount & TDS Ledger)
+    purchase_analysis_merged = purchase_analysis_summary.merge(
+        tds_report_master[['$Led_PAN', 'TDSAmount', 'TDS Ledger']],
+        on='$Led_PAN',
+        how='left'
+    )
+
+    # Step 5: Sales Analysis (New Report)
+    sales_analysis = data.loc[data['$Led_Group'] == 'Sales Accounts'].copy()
+    sales_analysis.fillna("null", inplace=True)
+
+    # Fill blank "$Led_PAN" with respective "PartyLedgerName"
+    sales_analysis['$Led_PAN'] = sales_analysis.apply(
+        lambda row: row['$Party_LedName'] if row['$Led_PAN'] == "null" else row['$Led_PAN'], axis=1
+    )
+
+    # Concatenate "$Party_LedName" for each "$Led_PAN"
+    sales_analysis["PartyLedgerName"] = (
+        sales_analysis.groupby('$Led_PAN')['$Party_LedName']
+        .transform(lambda x: ' & '.join(x.dropna().unique()))
+    )
+    sales_analysis.drop(columns=['$Party_LedName'], inplace=True)
+
+
+    # Group by "PartyLedgerName", "$Led_PAN", "$VoucherTypeName" and sum "$Amount"
+    sales_analysis_summary = (
+        sales_analysis
+        .groupby(["PartyLedgerName", "$Led_PAN", "$VoucherTypeName"], as_index=False)
+        .agg({'$Amount': 'sum'})
+    )
+    sales_analysis_summary.rename(columns={'$Amount': 'SalesAmount'}, inplace=True)
+
+    # Pivot "$VoucherTypeName" and sum "$Amount"
+    sales_pivot = sales_analysis_summary.pivot_table(
+        index=["PartyLedgerName", "$Led_PAN"], 
+        columns="$VoucherTypeName", 
+        values="SalesAmount", 
+        aggfunc="sum", 
+        fill_value=0
+    ).reset_index() 
+    
+    # Load the Excel file
+    excel_data = pd.ExcelFile(winman_file)
+
+    # Filter the sheets containing "Deduction"
+    if "Deduction" in excel_data.sheet_names:
+        sheet_data = pd.read_excel(winman_file, sheet_name="Deduction", skiprows=3)
+
+        # Manually assign correct column headers
+        sheet_data.columns = [
+            "Challan ID", "Name", "PAN", "Type of Deductee", "PAN validation result",
+            "Section 206AB applicable?", "PAN Status", "Amount Paid / Credited",
+            "Paid / Credited Date", "Cash withdrawal exceeding limit", "Deduction Date",
+            "Deducted and deposited - Tax", "Total Tax - deducted and deposited",
+            "Deduction Rate", "Reason for Lower/Higher Deduction",
+            "Certificate number u/s 197", "Section", "194N Deduction Type",
+            "Shortfall/Excess (-)", "Quarter"
+        ]
+
+        # Fill blank cells with "null"
+        sheet_data = sheet_data.fillna("null")
+
+        # Clean the "PAN" column by removing spaces
+        sheet_data["PAN"] = sheet_data["PAN"].str.replace(" ", "")
+
+        # Select relevant columns
+        selected_data = sheet_data[["PAN", "Name", "Total Tax - deducted and deposited", "Section"]]
+
+        # Group by "PAN" and "Name", concatenate "Section" with "&", and sum "Total Tax - deducted and deposited"
+        grouped_winman_data = (
+            selected_data
+            .groupby(["PAN", "Name"], as_index=False)
+            .agg(
+                TDS_Deposited=("Total Tax - deducted and deposited", "sum"),
+                Section=("Section", lambda sections: " & ".join(sorted(set(sections))))
+            )
+        )
+
+        # Merge with existing merged_data on PAN
+        final_merged_data = merged_data.merge(
+            grouped_winman_data,
+            left_on="$Led_PAN",
+            right_on="PAN",
+            how="left"
+        )
+
+        # Merge with Purchase Analysis on Winman Data with PAN
+        final_Purchase_Analysis = purchase_analysis_merged.merge(
+            grouped_winman_data,
+            left_on="$Led_PAN",
+            right_on="PAN",
+            how="left"
+        )
+        
+        # Step 7: Select Save Location for the Output File
+        save_path = asksaveasfilename(
+            defaultextension=".xlsx",
+            filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
+            title="Select location to save the final output Excel file"
+        )
+
+        if save_path:
+            # Export the resulting DataFrame to an Excel file
+            with pd.ExcelWriter(save_path) as writer:
+                final_merged_data.to_excel(writer, sheet_name='Final_Merged_Report', index=False)
+                tds_report_master.to_excel(writer, sheet_name='TDS_Report_Master', index=False)
+                grouped_winman_data.to_excel(writer, sheet_name='Winman_TDS_Register', index=False)
+                final_Purchase_Analysis.to_excel(writer, sheet_name='Purchase_Analysis', index=False)
+                sales_pivot.to_excel(writer, sheet_name='Sales_Analysis', index=False)
+
+            logging.info(f"The final report has been successfully saved to: {save_path}")
+        else:
+            logging.warning("Save operation was canceled.")
+    else:
+        raise ValueError("The sheet 'Deduction' was not found in the Excel file. Please ensure the sheet exists and try again.")
+
+except FileNotFoundError as fnf_error:
+    logging.error(f"File not found: {fnf_error}")
+except Exception as e:
+    logging.error(f"An error occurred: {e}")
